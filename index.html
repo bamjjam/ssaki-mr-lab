@@ -99,7 +99,7 @@ scene.background = BG;
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 50);
 camera.position.set(0.32, 0.5, 0.72);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.13, -0.05);
+controls.target.set(-0.05, 0.14, -0.04);
 controls.enableDamping = true;
 controls.minDistance = 0.25; controls.maxDistance = 2;
 controls.update();
@@ -182,8 +182,8 @@ const labels = [
 const BUTTONS = [
   { id: 'add', label: '쌓기' },
   { id: 'remove', label: '빼기' },
-  { id: 'clear', label: '초기화' },
   { id: 'quiz', label: '문제' },
+  { id: 'clear', label: '초기화' },
   { id: 'move', label: '옮기기' },
 ];
 const buttonMeshes = [];
@@ -191,8 +191,9 @@ BUTTONS.forEach((b, i) => {
   const { ctx, tex } = canvasTexture(256, 112, 2);
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.0438),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false }));
-  mesh.position.set((i - 2) * 0.108, 0.03, HALF + 0.085);
-  mesh.rotation.x = -0.85;   // 사용자 쪽으로 세워서 잘 보이게
+  // 판 왼쪽에 세로로 세운 버튼 기둥 (쌓은 나무에 가려지지 않고, 고개를 숙이지 않아도 보이게)
+  mesh.position.set(-HALF - 0.1, 0.3 - i * 0.058, 0.02);
+  mesh.rotation.set(-0.12, 0.35, 0);
   mesh.userData = { button: b.id, ctx, tex, def: b };
   world.add(mesh);
   buttonMeshes.push(mesh);
@@ -307,12 +308,12 @@ function drawPanel() {
     drawRow(ctx, 70, PRESETS[quiz], '#6f86b8', false);
   } else {
     ctx.fillStyle = '#7a6a55'; ctx.font = `700 30px ${FONT}`;
-    ctx.fillText('자유롭게 쌓아 보세요.', 150, 150);
+    ctx.fillText('쌓는 법: 판의 칸을 레이저로 가리켜 보세요.', 150, 140);
     ctx.font = `500 24px ${FONT}`;
-    ctx.fillText('판 바로 앞에 있는 ‘문제’ 버튼을 가리키고', 150, 196);
-    ctx.fillText('방아쇠(손은 핀치)를 누르면 도전이 시작돼요.', 150, 230);
+    ctx.fillText('초록 상자가 보이면 방아쇠(손은 핀치)를 당겨요.', 150, 182);
+    ctx.fillText('왼쪽 ‘문제’ 버튼 = 도전 시작   엄지 스틱 위·아래 = 판 높이', 150, 222);
     ctx.fillStyle = '#4f6fb0'; ctx.font = `700 24px ${FONT}`;
-    ctx.fillText('컨트롤러 A·X 버튼 = 다음 문제   B·Y 버튼 = 쌓기/빼기 바꾸기', 150, 282);
+    ctx.fillText('A·X 버튼 = 다음 문제   B·Y 버튼 = 쌓기/빼기 바꾸기', 150, 272);
   }
 
   // 2줄: 내 모양
@@ -459,7 +460,11 @@ function act(t, src) {
 
 function pressButton(id) {
   beep(880, 0.05);
-  if (id === 'add' || id === 'remove') mode = id;
+  if (id === 'add' || id === 'remove') {
+    mode = id;
+    say(id === 'add' ? '쌓기: 판의 칸을 가리키고 방아쇠!' : '빼기: 뺄 나무를 가리키고 방아쇠!',
+        id === 'add' ? '#c27a2c' : '#c9483b', 3000);
+  }
   else if (id === 'clear') { h = makeHeights(); solved = false; afterChange(); say('모두 치웠어요', '#7a6a55', 1500); }
   else if (id === 'quiz') {
     quiz = quiz + 1 >= PRESETS.length ? -1 : quiz + 1;
@@ -468,7 +473,7 @@ function pressButton(id) {
   }
   else if (id === 'move') {
     if (renderer.xr.isPresenting) { needPlace = true; placeFrames = 0; say('내 앞으로 옮겼어요', '#7a6a55', 1500); }
-    else { camera.position.set(0.32, 0.5, 0.72); controls.target.set(0, 0.13, -0.05); controls.update(); }
+    else { camera.position.set(0.32, 0.5, 0.72); controls.target.set(-0.05, 0.14, -0.04); controls.update(); }
   }
   drawButtons(); drawPanel();
 }
@@ -562,8 +567,9 @@ function placeInFront() {
   camDir.y = 0;
   if (camDir.lengthSq() < 1e-4) camDir.set(0, 0, -1);
   camDir.normalize();
-  world.position.copy(camPos).addScaledVector(camDir, 0.42);
-  world.position.y = camPos.y - 0.38;
+  // 판은 눈보다 조금 아래, 패널은 거의 눈높이에 오도록
+  world.position.copy(camPos).addScaledVector(camDir, 0.45);
+  world.position.y = camPos.y - 0.27;
   world.rotation.set(0, Math.atan2(-camDir.x, -camDir.z), 0);
 }
 
@@ -615,8 +621,15 @@ addEventListener('resize', () => {
 });
 
 // ---------- 매 프레임 ----------
+let lastTime = 0;
 renderer.setAnimationLoop((time, frame) => {
+  const dt = Math.min(0.1, (time - lastTime) / 1000 || 0); lastTime = time;
   if (renderer.xr.isPresenting) {
+    // 엄지 스틱 위·아래로 판 높이 조절
+    for (const c of controllers) {
+      const ax = c.userData.src?.gamepad?.axes;
+      if (ax && Math.abs(ax[3] || 0) > 0.4) world.position.y -= ax[3] * dt * 0.25;
+    }
     if (needPlace && frame && ++placeFrames > 4) { placeInFront(); needPlace = false; }
     const ts = [];
     for (const c of controllers) {
