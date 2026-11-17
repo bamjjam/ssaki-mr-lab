@@ -311,9 +311,9 @@ function drawPanel() {
     ctx.fillText('쌓는 법: 판의 칸을 레이저로 가리켜 보세요.', 150, 140);
     ctx.font = `500 24px ${FONT}`;
     ctx.fillText('초록 상자가 보이면 방아쇠(손은 핀치)를 당겨요.', 150, 182);
-    ctx.fillText('왼쪽 ‘문제’ 버튼 = 도전 시작   엄지 스틱 위·아래 = 판 높이', 150, 222);
+    ctx.fillText('컨트롤러 옆 그립 버튼을 누르면 가리킨 나무가 빠져요.', 150, 222);
     ctx.fillStyle = '#4f6fb0'; ctx.font = `700 24px ${FONT}`;
-    ctx.fillText('A·X 버튼 = 다음 문제   B·Y 버튼 = 쌓기/빼기 바꾸기', 150, 272);
+    ctx.fillText('왼쪽 ‘문제’ 버튼 = 도전 시작   ‘옮기기’ = 판 다시 놓기', 150, 272);
   }
 
   // 2줄: 내 모양
@@ -472,7 +472,10 @@ function pressButton(id) {
     if (quiz >= 0) say(`문제 ${quiz + 1}: 목표 모양처럼 쌓아 보세요`, '#4f6fb0', 2500);
   }
   else if (id === 'move') {
-    if (renderer.xr.isPresenting) { needPlace = true; placeFrames = 0; say('내 앞으로 옮겼어요', '#7a6a55', 1500); }
+    if (renderer.xr.isPresenting && sessionMode === 'immersive-ar') {
+      controllers.forEach(c => { c.userData.lastTarget = null; });
+      startPlacement();
+    } else if (renderer.xr.isPresenting) { needPlace = true; placeFrames = 0; say('내 앞으로 옮겼어요', '#7a6a55', 1500); }
     else { camera.position.set(0.32, 0.5, 0.72); controls.target.set(-0.05, 0.14, -0.04); controls.update(); }
   }
   drawButtons(); drawPanel();
@@ -492,8 +495,12 @@ const controllers = [0, 1].map(i => {
   c.userData = { line, dot, src: null, ghost: ghosts[i] };
   c.addEventListener('connected', e => { c.userData.src = e.data; c.add(line); });
   c.addEventListener('disconnected', () => { c.userData.src = null; c.remove(line); dot.visible = false; ghosts[i].visible = false; });
-  c.addEventListener('selectstart', () => act(pickFrom(c), c.userData.src));
-  c.addEventListener('squeezestart', () => act(pickFrom(c, 'remove'), c.userData.src));
+  c.addEventListener('selectstart', () => {
+    if (placing) { finishPlacement(); return; }
+    // 화면에 보이던 것(초록 상자·커진 버튼)과 똑같은 대상에 동작하도록 방금 프레임의 결과를 사용
+    act(c.userData.lastTarget ?? pickFrom(c), c.userData.src);
+  });
+  c.addEventListener('squeezestart', () => { if (!placing) act(pickFrom(c, 'remove'), c.userData.src); });
   scene.add(c);
   return c;
 });
@@ -511,13 +518,78 @@ const btnAR = document.getElementById('btnAR');
 const btnVR = document.getElementById('btnVR');
 const status = document.getElementById('status');
 let sessionMode = null, needPlace = false, placeFrames = 0;
+let placing = false, hitSource = null;
+
+// ---------- 책상 위에 판 놓기 (MR) ----------
+// 책상을 바라보면 초록 테두리가 책상 면에 붙어서 보이고, 방아쇠를 당기면 그 자리에 판이 놓임
+const reticle = new THREE.Group();
+{
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.035, 0.045, 40).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: '#36b37e' }));
+  const sq = N * CELL;
+  const outlinePts = [-1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, -1, -1].map(v => v * sq / 2);
+  const og = new THREE.BufferGeometry();
+  const arr = [];
+  for (let i = 0; i < outlinePts.length; i += 2) arr.push(outlinePts[i], 0.002, outlinePts[i + 1]);
+  og.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  const outline = new THREE.LineSegments(og, new THREE.LineBasicMaterial({ color: '#36b37e' }));
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(sq, sq).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: '#36b37e', transparent: true, opacity: 0.18, depthWrite: false }));
+  reticle.add(ring, outline, fill);
+}
+reticle.visible = false;
+scene.add(reticle);
+
+// 눈앞에 따라다니는 안내문
+const hint = canvasTexture(1024, 230, 2);
+{
+  const { ctx, tex } = hint;
+  roundRect(ctx, 0, 0, 1024, 230, 40); ctx.fillStyle = 'rgba(30,24,16,0.82)'; ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = `900 46px ${FONT}`; ctx.textAlign = 'center';
+  ctx.fillText('책상 위를 바라보세요', 512, 78);
+  ctx.font = `500 32px ${FONT}`; ctx.fillStyle = '#d8f5e5';
+  ctx.fillText('초록 네모가 책상에 붙으면 방아쇠(손은 핀치)를 당겨요', 512, 138);
+  ctx.fillStyle = '#e8dcc8'; ctx.font = `500 26px ${FONT}`;
+  ctx.fillText('네모가 안 보이면 그냥 당기세요 → 눈앞에 놓여요', 512, 190);
+  tex.needsUpdate = true;
+}
+const hintMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.09),
+  new THREE.MeshBasicMaterial({ map: hint.tex, transparent: true, toneMapped: false, depthTest: false }));
+hintMesh.position.set(0, -0.06, -0.7);
+hintMesh.renderOrder = 10;
+hintMesh.visible = false;
+camera.add(hintMesh);
+scene.add(camera);
+
+function startPlacement() {
+  placing = true;
+  world.visible = false;
+  reticle.visible = false;
+  hintMesh.visible = true;
+}
+function finishPlacement() {
+  placing = false;
+  hintMesh.visible = false;
+  camera.getWorldPosition(camPos);
+  if (reticle.visible) {
+    // 책상 면 위, 판의 '앞'이 나를 향하게
+    world.position.copy(reticle.position);
+    world.rotation.set(0, Math.atan2(camPos.x - reticle.position.x, camPos.z - reticle.position.z), 0);
+  } else {
+    placeInFront();
+  }
+  reticle.visible = false;
+  world.visible = true;
+  beep(700, 0.08); setTimeout(() => beep(900, 0.08), 90);
+  say('판을 놓았어요! 칸을 가리키고 방아쇠', '#2f9e5b', 3500);
+}
 
 async function startXR(kind) {
   try {
     beep(1, 0.01, 'sine', 0.0001); // 소리 장치 깨우기
     const session = await navigator.xr.requestSession(kind, {
       requiredFeatures: ['local-floor'],
-      optionalFeatures: ['hand-tracking'],
+      optionalFeatures: kind === 'immersive-ar' ? ['hand-tracking', 'hit-test'] : ['hand-tracking'],
     });
     sessionMode = kind;
     renderer.xr.setReferenceSpaceType('local-floor');
@@ -535,9 +607,21 @@ renderer.xr.addEventListener('sessionstart', () => {
   scene.background = ar ? null : new THREE.Color('#dfe6ee');
   vrRoom.visible = !ar; floorGrid.visible = !ar;
   ghosts[2].visible = false;
-  needPlace = true; placeFrames = 0;
+  if (ar) {
+    // 책상 같은 실제 면을 찾는 기능(hit-test) 준비. 안 되면 눈앞에 놓는 방식으로 대신함
+    const session = renderer.xr.getSession();
+    session.requestReferenceSpace('viewer')
+      .then(vs => session.requestHitTestSource?.({ space: vs }))
+      .then(src => { hitSource = src || null; })
+      .catch(() => { hitSource = null; });
+    startPlacement();
+  } else {
+    needPlace = true; placeFrames = 0;
+  }
 });
 renderer.xr.addEventListener('sessionend', () => {
+  try { hitSource?.cancel(); } catch (e) {}
+  hitSource = null; placing = false; hintMesh.visible = false; reticle.visible = false; world.visible = true;
   controls.enabled = true;
   scene.background = BG;
   vrRoom.visible = false; floorGrid.visible = false;
@@ -554,7 +638,7 @@ renderer.xr.addEventListener('sessionend', () => {
   try { vr = await navigator.xr.isSessionSupported('immersive-vr'); } catch (e) {}
   btnAR.disabled = !ar; btnVR.disabled = !vr;
   status.textContent = ar || vr
-    ? '헤드셋 준비 완료! 책상 앞에 앉아서 시작해 보세요.'
+    ? '헤드셋 준비 완료! 책상 앞에 앉아서 MR로 시작 → 책상을 바라보고 방아쇠를 당기면 판이 놓여요.'
     : '헤드셋이 연결되지 않았어요. 지금은 PC 미리보기 모드예요.';
 })();
 
@@ -567,9 +651,9 @@ function placeInFront() {
   camDir.y = 0;
   if (camDir.lengthSq() < 1e-4) camDir.set(0, 0, -1);
   camDir.normalize();
-  // 판은 눈보다 조금 아래, 패널은 거의 눈높이에 오도록
+  // 책상을 못 찾았을 때: 앉은 자세 기준 책상 높이쯤(눈보다 35cm 아래)
   world.position.copy(camPos).addScaledVector(camDir, 0.45);
-  world.position.y = camPos.y - 0.27;
+  world.position.y = camPos.y - 0.35;
   world.rotation.set(0, Math.atan2(-camDir.x, -camDir.z), 0);
 }
 
@@ -631,11 +715,32 @@ renderer.setAnimationLoop((time, frame) => {
       if (ax && Math.abs(ax[3] || 0) > 0.4) world.position.y -= ax[3] * dt * 0.25;
     }
     if (needPlace && frame && ++placeFrames > 4) { placeInFront(); needPlace = false; }
+    if (placing) {
+      // 바라보는 곳의 실제 수평면(책상·바닥) 찾기
+      reticle.visible = false;
+      if (hitSource && frame) {
+        const res = frame.getHitTestResults(hitSource);
+        const pose = res[0]?.getPose(renderer.xr.getReferenceSpace());
+        if (pose) {
+          const m = pose.transform.matrix;
+          if (m[5] > 0.85) {   // 면이 위를 향할 때만 (벽 제외)
+            reticle.position.set(m[12], m[13], m[14]);
+            camera.getWorldPosition(camPos);
+            reticle.rotation.set(0, Math.atan2(camPos.x - m[12], camPos.z - m[14]), 0);
+            reticle.visible = true;
+          }
+        }
+      }
+      for (const c of controllers) { c.userData.line.scale.z = 0.5; c.userData.dot.visible = false; c.userData.ghost.visible = false; }
+      renderer.render(scene, camera);
+      return;
+    }
     const ts = [];
     for (const c of controllers) {
       const { line, dot, src, ghost } = c.userData;
       if (!src) continue;
       const t = pickFrom(c);
+      c.userData.lastTarget = t;
       ts.push(t);
       showGhost(ghost, t);
       if (t) {
@@ -645,16 +750,6 @@ renderer.setAnimationLoop((time, frame) => {
       } else { line.scale.z = 0.5; dot.visible = false; }
     }
     hoverButtons(ts);
-    // 컨트롤러 버튼 단축키: A/X(4) = 다음 문제, B/Y(5) = 쌓기·빼기 바꾸기
-    for (const c of controllers) {
-      const gp = c.userData.src?.gamepad;
-      if (!gp) continue;
-      const prev = c.userData.prevBtn || [];
-      const now = [4, 5].map(i => !!gp.buttons[i]?.pressed);
-      if (now[0] && !prev[0]) pressButton('quiz');
-      if (now[1] && !prev[1]) pressButton(mode === 'add' ? 'remove' : 'add');
-      c.userData.prevBtn = now;
-    }
   } else {
     controls.update();
   }
