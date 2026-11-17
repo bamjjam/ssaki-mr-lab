@@ -87,6 +87,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
+// 헤드셋에서 글자가 또렷하게 보이도록 렌더링 해상도를 올리고, 가장자리 흐림(포비에이션)을 끔
+renderer.xr.setFramebufferScaleFactor(1.6);
+renderer.xr.setFoveation(0);
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -94,9 +97,9 @@ const BG = new THREE.Color('#f3efe7');
 scene.background = BG;
 
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 50);
-camera.position.set(0.28, 0.42, 0.52);
+camera.position.set(0.32, 0.5, 0.72);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.07, -0.03);
+controls.target.set(0, 0.13, -0.05);
 controls.enableDamping = true;
 controls.minDistance = 0.25; controls.maxDistance = 2;
 controls.update();
@@ -139,12 +142,15 @@ floorGrid.visible = false;
 scene.add(floorGrid);
 
 // ---------- 글자 텍스처 도우미 ----------
-function canvasTexture(w, hgt) {
-  const c = document.createElement('canvas'); c.width = w; c.height = hgt;
+// s = 실제 픽셀 배율 (그리는 좌표는 w×hgt 그대로, 텍스처는 s배 선명하게)
+function canvasTexture(w, hgt, s = 1) {
+  const c = document.createElement('canvas'); c.width = w * s; c.height = hgt * s;
+  const ctx = c.getContext('2d');
+  ctx.setTransform(s, 0, 0, s, 0, 0);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return { c, ctx: c.getContext('2d'), tex };
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return { c, ctx, tex };
 }
 function roundRect(ctx, x, y, w, hh, r) {
   ctx.beginPath(); ctx.moveTo(x + r, y);
@@ -182,11 +188,11 @@ const BUTTONS = [
 ];
 const buttonMeshes = [];
 BUTTONS.forEach((b, i) => {
-  const { ctx, tex } = canvasTexture(256, 112);
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.068, 0.0298),
+  const { ctx, tex } = canvasTexture(256, 112, 2);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.0438),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false }));
-  mesh.position.set((i - 2) * 0.074, 0.012, HALF + 0.07);
-  mesh.rotation.x = -Math.PI / 2 + 0.6;
+  mesh.position.set((i - 2) * 0.108, 0.03, HALF + 0.085);
+  mesh.rotation.x = -0.85;   // 사용자 쪽으로 세워서 잘 보이게
   mesh.userData = { button: b.id, ctx, tex, def: b };
   world.add(mesh);
   buttonMeshes.push(mesh);
@@ -210,11 +216,11 @@ function drawButtons() {
 
 // ---------- 앞·옆·위 모양 패널 ----------
 const PW = 1024, PH = 640;
-const panel = canvasTexture(PW, PH);
-const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42 * PH / PW),
+const panel = canvasTexture(PW, PH, 2);
+const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.56, 0.56 * PH / PW),
   new THREE.MeshBasicMaterial({ map: panel.tex, transparent: true, toneMapped: false }));
-panelMesh.position.set(0, 0.16, -HALF - 0.06);
-panelMesh.rotation.x = -0.22;
+panelMesh.position.set(0, 0.29, -HALF - 0.08);
+panelMesh.rotation.x = -0.08;
 world.add(panelMesh);
 
 function project(hh) {
@@ -303,9 +309,10 @@ function drawPanel() {
     ctx.fillStyle = '#7a6a55'; ctx.font = `700 30px ${FONT}`;
     ctx.fillText('자유롭게 쌓아 보세요.', 150, 150);
     ctx.font = `500 24px ${FONT}`;
-    ctx.fillText('‘문제’ 버튼을 누르면 앞·옆·위 모양이 주어지고,', 150, 200);
-    ctx.fillText('그 모양과 똑같이 되도록 쌓는 도전이 시작돼요.', 150, 236);
-    ctx.fillText('위에서 본 모양의 숫자는 그 칸에 쌓인 개수예요.', 150, 290);
+    ctx.fillText('판 바로 앞에 있는 ‘문제’ 버튼을 가리키고', 150, 196);
+    ctx.fillText('방아쇠(손은 핀치)를 누르면 도전이 시작돼요.', 150, 230);
+    ctx.fillStyle = '#4f6fb0'; ctx.font = `700 24px ${FONT}`;
+    ctx.fillText('컨트롤러 A·X 버튼 = 다음 문제   B·Y 버튼 = 쌓기/빼기 바꾸기', 150, 282);
   }
 
   // 2줄: 내 모양
@@ -461,7 +468,7 @@ function pressButton(id) {
   }
   else if (id === 'move') {
     if (renderer.xr.isPresenting) { needPlace = true; placeFrames = 0; say('내 앞으로 옮겼어요', '#7a6a55', 1500); }
-    else { camera.position.set(0.28, 0.42, 0.52); controls.target.set(0, 0.07, -0.03); controls.update(); }
+    else { camera.position.set(0.32, 0.5, 0.72); controls.target.set(0, 0.13, -0.05); controls.update(); }
   }
   drawButtons(); drawPanel();
 }
@@ -549,14 +556,14 @@ renderer.xr.addEventListener('sessionend', () => {
 // 사용자 눈앞, 책상 높이쯤으로 판을 옮기기
 const camPos = new THREE.Vector3(), camDir = new THREE.Vector3();
 function placeInFront() {
-  const xrCam = renderer.xr.getCamera();
-  xrCam.getWorldPosition(camPos);
-  xrCam.getWorldDirection(camDir);
+  // 헤드셋 사용 중에는 three.js가 이 카메라를 머리 위치로 맞춰 줌
+  camera.getWorldPosition(camPos);
+  camera.getWorldDirection(camDir);
   camDir.y = 0;
   if (camDir.lengthSq() < 1e-4) camDir.set(0, 0, -1);
   camDir.normalize();
-  world.position.copy(camPos).addScaledVector(camDir, 0.45);
-  world.position.y = camPos.y - 0.42;
+  world.position.copy(camPos).addScaledVector(camDir, 0.42);
+  world.position.y = camPos.y - 0.38;
   world.rotation.set(0, Math.atan2(-camDir.x, -camDir.z), 0);
 }
 
@@ -625,6 +632,16 @@ renderer.setAnimationLoop((time, frame) => {
       } else { line.scale.z = 0.5; dot.visible = false; }
     }
     hoverButtons(ts);
+    // 컨트롤러 버튼 단축키: A/X(4) = 다음 문제, B/Y(5) = 쌓기·빼기 바꾸기
+    for (const c of controllers) {
+      const gp = c.userData.src?.gamepad;
+      if (!gp) continue;
+      const prev = c.userData.prevBtn || [];
+      const now = [4, 5].map(i => !!gp.buttons[i]?.pressed);
+      if (now[0] && !prev[0]) pressButton('quiz');
+      if (now[1] && !prev[1]) pressButton(mode === 'add' ? 'remove' : 'add');
+      c.userData.prevBtn = now;
+    }
   } else {
     controls.update();
   }
