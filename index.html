@@ -112,6 +112,9 @@ scene.add(sun);
 // 쌓기나무 판 전체를 담는 그룹 (MR에서는 사용자 앞 책상 높이로 옮김)
 const world = new THREE.Group();
 scene.add(world);
+// 돌아가는 부분(판·나무·글자)만 따로 묶음 — 패널과 버튼은 제자리
+const board = new THREE.Group();
+world.add(board);
 
 // 판
 const base = new THREE.Mesh(
@@ -119,7 +122,7 @@ const base = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: '#efe6d4', roughness: 0.9 })
 );
 base.position.y = -0.004;
-world.add(base);
+board.add(base);
 
 const gridPts = [];
 for (let i = 0; i <= N; i++) {
@@ -128,7 +131,7 @@ for (let i = 0; i <= N; i++) {
 }
 const gridGeo = new THREE.BufferGeometry();
 gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(gridPts, 3));
-world.add(new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: '#b9a582' })));
+board.add(new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: '#b9a582' })));
 
 // VR 모드에서만 보이는 책상과 바닥
 const vrRoom = new THREE.Group();
@@ -170,7 +173,7 @@ function flatLabel(text, w, x, z, rotZ = 0) {
     ctx.clearRect(0, 0, 256, 96); ctx.fillStyle = '#8a6a3c'; ctx.font = `900 64px ${FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, 128, 50); tex.needsUpdate = true;
   };
-  world.add(m);
+  board.add(m);
   return m;
 }
 const labels = [
@@ -182,6 +185,7 @@ const labels = [
 const BUTTONS = [
   { id: 'add', label: '쌓기' },
   { id: 'remove', label: '빼기' },
+  { id: 'rotate', label: '돌리기' },
   { id: 'quiz', label: '문제' },
   { id: 'clear', label: '초기화' },
   { id: 'move', label: '옮기기' },
@@ -311,7 +315,7 @@ function drawPanel() {
     ctx.fillText('쌓는 법: 판의 칸을 레이저로 가리켜 보세요.', 150, 140);
     ctx.font = `500 24px ${FONT}`;
     ctx.fillText('초록 상자가 보이면 방아쇠(손은 핀치)를 당겨요.', 150, 182);
-    ctx.fillText('컨트롤러 옆 그립 버튼을 누르면 가리킨 나무가 빠져요.', 150, 222);
+    ctx.fillText('그립 버튼 = 빼기   엄지 스틱 ↔ 돌리기 · ↕ 높이   (몸을 움직여 봐도 돼요)', 150, 222);
     ctx.fillStyle = '#4f6fb0'; ctx.font = `700 24px ${FONT}`;
     ctx.fillText('왼쪽 ‘문제’ 버튼 = 도전 시작   ‘옮기기’ = 판 다시 놓기', 150, 272);
   }
@@ -331,7 +335,7 @@ const woodA = new THREE.MeshStandardMaterial({ color: '#e2b36f', roughness: 0.75
 const woodB = new THREE.MeshStandardMaterial({ color: '#d29c55', roughness: 0.75 });
 const edgeMat = new THREE.LineBasicMaterial({ color: '#7a5326' });
 const cubes = new THREE.Group();
-world.add(cubes);
+board.add(cubes);
 let cubeMeshes = [];
 
 const cellPos = (x, y, z, v = new THREE.Vector3()) =>
@@ -355,7 +359,7 @@ function makeGhost() {
   const g = new THREE.Mesh(new THREE.BoxGeometry(CELL * 1.02, CELL * 1.02, CELL * 1.02),
     new THREE.MeshBasicMaterial({ color: '#36b37e', transparent: true, opacity: 0.35, depthWrite: false }));
   g.visible = false;
-  world.add(g);
+  board.add(g);
   return g;
 }
 const ghosts = [makeGhost(), makeGhost(), makeGhost()];
@@ -375,7 +379,7 @@ function pick(rc, forceMode) {
 
   let x, z, y;
   if (o === base) {
-    const local = world.worldToLocal(hit.point.clone());
+    const local = board.worldToLocal(hit.point.clone());
     x = Math.floor((local.x + HALF) / CELL); z = Math.floor((local.z + HALF) / CELL);
     if (!inb(x) || !inb(z)) return { type: m, valid: false, hidden: true, dist: hit.distance };
     if (m === 'remove') {
@@ -465,6 +469,7 @@ function pressButton(id) {
     say(id === 'add' ? '쌓기: 판의 칸을 가리키고 방아쇠!' : '빼기: 뺄 나무를 가리키고 방아쇠!',
         id === 'add' ? '#c27a2c' : '#c9483b', 3000);
   }
+  else if (id === 'rotate') { rotTarget = (rotTarget ?? board.rotation.y) - Math.PI / 2; }
   else if (id === 'clear') { h = makeHeights(); solved = false; afterChange(); say('모두 치웠어요', '#7a6a55', 1500); }
   else if (id === 'quiz') {
     quiz = quiz + 1 >= PRESETS.length ? -1 : quiz + 1;
@@ -625,7 +630,7 @@ renderer.xr.addEventListener('sessionend', () => {
   controls.enabled = true;
   scene.background = BG;
   vrRoom.visible = false; floorGrid.visible = false;
-  world.position.set(0, 0, 0); world.rotation.set(0, 0, 0);
+  world.position.set(0, 0, 0); world.rotation.set(0, 0, 0); board.rotation.set(0, 0, 0); rotTarget = null;
 });
 
 (async () => {
@@ -706,13 +711,21 @@ addEventListener('resize', () => {
 
 // ---------- 매 프레임 ----------
 let lastTime = 0;
+let rotTarget = null;   // '돌리기' 버튼으로 90°씩 부드럽게 돌릴 목표 각도
 renderer.setAnimationLoop((time, frame) => {
   const dt = Math.min(0.1, (time - lastTime) / 1000 || 0); lastTime = time;
+  if (rotTarget !== null) {
+    const d = rotTarget - board.rotation.y;
+    board.rotation.y += d * Math.min(1, dt * 8);
+    if (Math.abs(d) < 0.003) { board.rotation.y = rotTarget; rotTarget = null; }
+  }
   if (renderer.xr.isPresenting) {
     // 엄지 스틱 위·아래로 판 높이 조절
     for (const c of controllers) {
       const ax = c.userData.src?.gamepad?.axes;
       if (ax && Math.abs(ax[3] || 0) > 0.4) world.position.y -= ax[3] * dt * 0.25;
+      // 엄지 스틱 좌우로 판 돌리기 (판 가운데를 중심으로)
+      if (ax && Math.abs(ax[2] || 0) > 0.4) { board.rotation.y -= ax[2] * dt * 1.6; rotTarget = null; }
     }
     if (needPlace && frame && ++placeFrames > 4) { placeInFront(); needPlace = false; }
     if (placing) {
